@@ -6,11 +6,12 @@ image = (
         python_version="3.11.13",
         lock_python_packages=False,
     )
-    .system_packages("curl", "git")
+    .system_packages("curl", "git", "python3-pip")
     .requirements_file("requirements.txt")
     .run(
         "uv pip install modular --index-url https://dl.modular.com/public/nightly/python/simple/ --prerelease allow"
     )
+    .run("chmod 777 -R /app/.venv")  # bug
 )
 
 MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
