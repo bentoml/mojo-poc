@@ -4,9 +4,19 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 from starlette.routing import Route
+from contextlib import asynccontextmanager
 
-# Use a single, reusable client instance for better performance.
-client = httpx.AsyncClient()
+@asynccontextmanager
+async def lifespan(app: Starlette):
+    """
+    Manage the lifespan of the httpx client.
+    The client is created on startup and closed on shutdown.
+    """
+    async with httpx.AsyncClient() as client:
+        app.state.client = client
+        yield
+        # Clean up the client resources
+        # (httpx.AsyncClient as context manager handles this automatically)
 
 def create_app(target: str) -> Starlette:
     """
@@ -16,6 +26,8 @@ def create_app(target: str) -> Starlette:
         """
         Proxies the incoming request to the target server.
         """
+        client: httpx.AsyncClient = request.app.state.client
+
         # Construct the full target URL.
         url = httpx.URL(target).join(request.url.path)
         url = url.copy_with(raw_path=request.url.query.encode("utf-8"))
@@ -55,7 +67,7 @@ def create_app(target: str) -> Starlette:
         Route("/{path:path}", endpoint=proxy, methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
     ]
 
-    return Starlette(routes=routes)
+    return Starlette(routes=routes, lifespan=lifespan)
 
 if __name__ == "__main__":
     # The target server to proxy requests to.
