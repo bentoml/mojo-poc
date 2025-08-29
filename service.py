@@ -41,7 +41,7 @@ image = (
     .run("chmod 777 -R /app/.venv")  # bug
 )
 
-INTERNAL_PORT = 8080
+INTERNAL_PORT = 38080
 MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
 
 app = create_app(f"http://localhost:{INTERNAL_PORT}")
