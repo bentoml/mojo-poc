@@ -50,11 +50,10 @@ app = create_app(f"http://localhost:{INTERNAL_PORT}")
 @bentoml.service(
     name="llama-3.1-8b-instruct-modular",
     image=image,
-    envs=[
-        {"name": "HF_TOKEN"},
-    ],
+    envs=[{"name": "HF_TOKEN"}],
     resources={"gpu": 1, "gpu_type": "nvidia-l4"},
     traffic={"timeout": 300},
+    logging={"access": {"enabled": False}},
 )
 @bentoml.asgi_app(app)
 class ModularLLMService:
