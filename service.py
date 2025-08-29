@@ -1,20 +1,22 @@
 import bentoml
 from proxy import create_app
 import subprocess
-import atexit
 import sys
 import aiohttp
 import asyncio
+import os
+import signal
+import time
+import threading
 
 # Global variable to hold the subprocess
 subprocess_proc = None
 
 
 def start_subprocess(cmd):
-    """Starts a subprocess and registers a cleanup function."""
+    """Starts a subprocess."""
     global subprocess_proc
     try:
-        # Start the subprocess
         subprocess_proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
         print(f"Subprocess started with PID: {subprocess_proc.pid}")
     except FileNotFoundError:
@@ -23,27 +25,6 @@ def start_subprocess(cmd):
     except Exception as e:
         print(f"Error starting subprocess: {e}", file=sys.stderr)
         sys.exit(1)
-
-
-def cleanup_subprocess():
-    """Cleans up the subprocess on exit."""
-    global subprocess_proc
-    if subprocess_proc and subprocess_proc.poll() is None:
-        print(f"Terminating subprocess with PID: {subprocess_proc.pid}")
-        subprocess_proc.terminate()
-        try:
-            # Wait for a short period for the process to terminate
-            subprocess_proc.wait(timeout=5)
-            print("Subprocess terminated gracefully.")
-        except subprocess.TimeoutExpired:
-            print("Subprocess did not terminate in time, killing it.")
-            subprocess_proc.kill()
-            subprocess_proc.wait()
-            print("Subprocess killed.")
-
-
-# Register the cleanup function to be called on exit
-atexit.register(cleanup_subprocess)
 
 
 image = (
@@ -62,15 +43,6 @@ image = (
 
 INTERNAL_PORT = 8080
 MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
-CMD = [
-    "max",
-    "serve",
-    "--model-path",
-    MODEL_ID,
-    "--port",
-    str(INTERNAL_PORT),  # Ensure port is a string
-]
-
 
 app = create_app(f"http://localhost:{INTERNAL_PORT}")
 
@@ -90,9 +62,48 @@ class ModularLLMService:
 
     def __init__(self):
         """
-        Service constructor. Starts the background subprocess.
+        Service constructor. Starts the background subprocess and a thread to monitor it.
         """
+        CMD = [
+            "max",
+            "serve",
+            "--model-path",
+            self.model,
+            "--port",
+            str(INTERNAL_PORT),
+        ]
         start_subprocess(CMD)
+        monitor_thread = threading.Thread(target=self._monitor_subprocess, daemon=True)
+        monitor_thread.start()
+
+    def _monitor_subprocess(self):
+        """
+        Monitors the subprocess. If it exits, waits 1 minute,
+        then sends SIGTERM to the current (parent) process.
+        """
+        global subprocess_proc
+        if not subprocess_proc:
+            return
+
+        # Wait for the subprocess to exit
+        subprocess_proc.wait()
+
+        print(
+            f"Subprocess with PID {subprocess_proc.pid} has exited with code {subprocess_proc.returncode}."
+        )
+
+        try:
+            print("Waiting for 1 minute before sending SIGTERM to self...")
+            time.sleep(60)
+
+            parent_pid = os.getpid()  # Get current process PID
+            print(f"Sending SIGTERM to self (PID: {parent_pid}) to initiate shutdown.")
+            os.kill(parent_pid, signal.SIGTERM)
+        except Exception as e:
+            print(
+                f"An error occurred while signaling parent process: {e}",
+                file=sys.stderr,
+            )
 
     async def __is_ready__(self) -> bool:
         """
