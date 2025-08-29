@@ -1,4 +1,45 @@
 import bentoml
+from proxy import create_app
+import subprocess
+import atexit
+import sys
+
+# Global variable to hold the subprocess
+subprocess_proc = None
+
+def start_subprocess(cmd):
+    """Starts a subprocess and registers a cleanup function."""
+    global subprocess_proc
+    try:
+        # Start the subprocess
+        subprocess_proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
+        print(f"Subprocess started with PID: {subprocess_proc.pid}")
+    except FileNotFoundError:
+        print(f"Error: Command not found: {cmd[0]}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error starting subprocess: {e}", file=sys.stderr)
+        sys.exit(1)
+
+def cleanup_subprocess():
+    """Cleans up the subprocess on exit."""
+    global subprocess_proc
+    if subprocess_proc and subprocess_proc.poll() is None:
+        print(f"Terminating subprocess with PID: {subprocess_proc.pid}")
+        subprocess_proc.terminate()
+        try:
+            # Wait for a short period for the process to terminate
+            subprocess_proc.wait(timeout=5)
+            print("Subprocess terminated gracefully.")
+        except subprocess.TimeoutExpired:
+            print("Subprocess did not terminate in time, killing it.")
+            subprocess_proc.kill()
+            subprocess_proc.wait()
+            print("Subprocess killed.")
+
+# Register the cleanup function to be called on exit
+atexit.register(cleanup_subprocess)
+
 
 image = (
     bentoml.images.Image(
@@ -14,26 +55,37 @@ image = (
     .run("chmod 777 -R /app/.venv")  # bug
 )
 
+INTERNAL_PORT = 8080
 MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
+CMD = [
+    "max",
+    "serve",
+    "--model-path",
+    MODEL_ID,
+    "--port",
+    str(INTERNAL_PORT),  # Ensure port is a string
+]
+
+
+app = create_app(f"http://localhost:{INTERNAL_PORT}")
 
 
 @bentoml.service(
     name="llama-3.1-8b-instruct-modular",
     image=image,
-    cmd=[
-        "max",
-        "serve",
-        "--model-path",
-        MODEL_ID,
-        "--port",
-        "${PORT}",
-    ],
     envs=[
         {"name": "HF_TOKEN"},
     ],
-    endpoints={"livez": "/v1/health", "readyz": "/v1/health"},
+    # endpoints={"livez": "/v1/health", "readyz": "/v1/health"},
     resources={"gpu": 1, "gpu_type": "nvidia-l4"},
     traffic={"timeout": 300},
 )
+@bentoml.asgi_app(app)
 class ModularLLMService:
     model = bentoml.models.HuggingFaceModel(MODEL_ID, exclude=["original/*"])
+
+    def __init__(self):
+        """
+        Service constructor. Starts the background subprocess.
+        """
+        start_subprocess(CMD)
