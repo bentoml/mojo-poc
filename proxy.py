@@ -1,9 +1,12 @@
-import aiohttp
 import uvicorn
+import httpx
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 from starlette.routing import Route
+
+# Use a single, reusable client instance for better performance.
+client = httpx.AsyncClient()
 
 def create_app(target: str) -> Starlette:
     """
@@ -13,37 +16,40 @@ def create_app(target: str) -> Starlette:
         """
         Proxies the incoming request to the target server.
         """
-        async with aiohttp.ClientSession() as session:
-            # Construct the target URL
-            path = request.url.path
-            query = request.url.query
-            target_url = f"{target}{path}"
-            if query:
-                target_url += f"?{query}"
+        # Construct the full target URL.
+        url = httpx.URL(target).join(request.url.path)
+        url = url.copy_with(raw_path=request.url.query.encode("utf-8"))
 
-            # Stream the request body
-            async def stream_request_body():
-                async for chunk in request.stream():
-                    yield chunk
+        # Filter out hop-by-hop headers that shouldn't be forwarded.
+        headers = {
+            name: value
+            for name, value in request.headers.items()
+            if name.lower() not in ("host",)
+        }
 
-            # Forward the request
-            async with session.request(
-                method=request.method,
-                url=target_url,
-                headers=request.headers,
-                data=stream_request_body(),
-                allow_redirects=False
-            ) as resp:
-                # Stream the response back to the client
-                async def stream_response_body():
-                    async for chunk in resp.content.iter_any():
-                        yield chunk
+        # Build the request to the upstream server, streaming the body.
+        rp_req = client.build_request(
+            method=request.method,
+            url=url,
+            headers=headers,
+            content=request.stream(),
+        )
 
-                return StreamingResponse(
-                    stream_response_body(),
-                    status_code=resp.status,
-                    headers=resp.headers
-                )
+        # Send the request and get a streaming response.
+        rp_resp = await client.send(rp_req, stream=True)
+
+        # Filter hop-by-hop headers from the response.
+        response_headers = {
+            name: value
+            for name, value in rp_resp.headers.items()
+            if name.lower() not in ("content-encoding", "content-length", "transfer-encoding")
+        }
+        
+        return StreamingResponse(
+            rp_resp.aiter_bytes(),
+            status_code=rp_resp.status_code,
+            headers=response_headers,
+        )
 
     routes = [
         Route("/{path:path}", endpoint=proxy, methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
